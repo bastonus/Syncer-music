@@ -1,83 +1,565 @@
+require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
-const helmet = require('helmet');
-const rateLimit = require('express-rate-limit');
-const bodyParser = require('body-parser');
-const cookieParser = require('cookie-parser');
+const axios = require('axios');
+const { google } = require('googleapis');
+const { spotifyApi, oauth2Client } = require('./api-clients');
+const fs = require('fs/promises');
 const path = require('path');
-require('dotenv').config();
-
-const authRoutes = require('./routes/auth');
-const playlistRoutes = require('./routes/playlists');
-const syncRoutes = require('./routes/sync');
-const userRoutes = require('./routes/users');
-
-const { initDatabase } = require('./database/init');
-const { startSyncScheduler } = require('./services/syncScheduler');
-const logger = require('./utils/logger');
+const { v4: uuidv4 } = require('uuid');
+const { startSyncEngine } = require('./sync-engine');
+const { saveTokens } = require('./auth-manager');
+const { 
+  getSpotifyPlaylistTracks, searchSpotifyTrack, createSpotifyPlaylist,
+  getDeezerPlaylistTracks, searchDeezerTrack, createDeezerPlaylist,
+  getYouTubePlaylistTracks, searchYouTubeTrack, createYouTubePlaylist
+} = require('./api-helpers');
 
 const app = express();
-const PORT = process.env.PORT || 5000;
+const port = process.env.PORT || 3001;
 
-// Middleware de sécurité
-app.use(helmet());
-app.use(cors({
-  origin: process.env.CLIENT_URL || 'http://localhost:3000',
-  credentials: true
-}));
+// The spotifyApi and oauth2Client are now imported, so I remove their instantiation from here.
 
-// Rate limiting
-const limiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100 // limite à 100 requêtes par IP
+const scopes = [
+  'ugc-image-upload',
+  'user-read-playback-state',
+  'user-modify-playback-state',
+  'user-read-currently-playing',
+  'streaming',
+  'app-remote-control',
+  'user-read-email',
+  'user-read-private',
+  'playlist-read-collaborative',
+  'playlist-modify-public',
+  'playlist-read-private',
+  'playlist-modify-private',
+  'user-library-modify',
+  'user-library-read',
+  'user-top-read',
+  'user-read-playback-position',
+  'user-read-recently-played',
+  'user-follow-read',
+  'user-follow-modify'
+];
+
+app.use(cors());
+app.use(express.json());
+
+app.get('/', (req, res) => {
+  res.send('Hello from Syncer Music Server!');
 });
-app.use(limiter);
 
-// Parsers
-app.use(bodyParser.json({ limit: '10mb' }));
-app.use(bodyParser.urlencoded({ extended: true }));
-app.use(cookieParser());
+app.get('/auth/spotify', (req, res) => {
+  res.redirect(spotifyApi.createAuthorizeURL(scopes));
+});
 
-// Routes API
-app.use('/api/auth', authRoutes);
-app.use('/api/playlists', playlistRoutes);
-app.use('/api/sync', syncRoutes);
-app.use('/api/users', userRoutes);
+app.get('/auth/spotify/callback', (req, res) => {
+  const error = req.query.error;
+  const code = req.query.code;
 
-// Servir les fichiers statiques en production
-if (process.env.NODE_ENV === 'production') {
-  app.use(express.static(path.join(__dirname, '../client/build')));
-  
-  app.get('*', (req, res) => {
-    res.sendFile(path.join(__dirname, '../client/build/index.html'));
+  if (error) {
+    console.error('Callback Error:', error);
+    res.send(`Callback Error: ${error}`);
+    return;
+  }
+
+  spotifyApi.authorizationCodeGrant(code).then(async data => {
+    const tokens = {
+      access_token: data.body['access_token'],
+      refresh_token: data.body['refresh_token'],
+      expires_at: Date.now() + data.body['expires_in'] * 1000,
+    };
+    spotifyApi.setAccessToken(tokens.access_token);
+    spotifyApi.setRefreshToken(tokens.refresh_token);
+    await saveTokens('spotify', tokens);
+
+    console.log('access_token:', tokens.access_token);
+    console.log('refresh_token:', tokens.refresh_token);
+
+    console.log(
+      `Sucessfully retreived access token. Expires in ${data.body['expires_in']} s.`
+    );
+    res.redirect('http://localhost:5173'); // Redirect to frontend
+
+  }).catch(error => {
+    console.error('Error getting Tokens:', error);
+    res.send(`Error getting Tokens: ${error}`);
   });
+});
+
+// Deezer Auth
+const deezerAppId = process.env.DEEZER_APP_ID;
+const deezerSecretKey = process.env.DEEZER_SECRET_KEY;
+const deezerRedirectUri = 'http://localhost:3001/auth/deezer/callback';
+
+let deezerAccessToken = '';
+
+app.get('/auth/deezer', (req, res) => {
+  const url = `https://connect.deezer.com/oauth/auth.php?app_id=${deezerAppId}&redirect_uri=${deezerRedirectUri}&perms=basic_access,email,manage_library,delete_library,offline_access`;
+  res.redirect(url);
+});
+
+app.get('/auth/deezer/callback', async (req, res) => {
+  const code = req.query.code;
+  if (!code) {
+    return res.status(400).send('No code provided');
+  }
+
+  try {
+    const response = await axios.get(`https://connect.deezer.com/oauth/access_token.php?app_id=${deezerAppId}&secret=${deezerSecretKey}&code=${code}&output=json`);
+    
+    if (response.data.error) {
+      throw new Error(response.data.error);
+    }
+
+    const tokens = {
+      access_token: response.data.access_token,
+      // Deezer refresh token is managed by 'offline_access' perm, not explicit
+      expires_at: Date.now() + response.data.expires * 1000,
+    };
+    deezerAccessToken = tokens.access_token; // Keep for immediate use
+    await saveTokens('deezer', tokens);
+    console.log('Deezer Access Token:', deezerAccessToken);
+    res.redirect('http://localhost:5173');
+  } catch (error) {
+    console.error('Deezer auth error:', error.message);
+    res.status(500).send('Failed to authenticate with Deezer');
+  }
+});
+
+// Google / YouTube Music Auth
+const googleAuthScopes = [
+  'https://www.googleapis.com/auth/youtube.readonly',
+  'https://www.googleapis.com/auth/youtube.force-ssl'
+];
+
+let googleAuthTokens = {};
+
+app.get('/auth/google', (req, res) => {
+  const url = oauth2Client.generateAuthUrl({
+    access_type: 'offline',
+    scope: googleAuthScopes
+  });
+  res.redirect(url);
+});
+
+app.get('/auth/google/callback', async (req, res) => {
+  const { code } = req.query;
+  try {
+    const { tokens } = await oauth2Client.getToken(code);
+    oauth2Client.setCredentials(tokens);
+    await saveTokens('google', tokens);
+    googleAuthTokens = tokens;
+    console.log('Google Auth Tokens:', googleAuthTokens);
+    res.redirect('http://localhost:5173');
+  } catch (error) {
+    console.error('Google auth error:', error.message);
+    res.status(500).send('Failed to authenticate with Google');
+  }
+});
+
+// Transfer Endpoint
+app.post('/api/transfer', async (req, res) => {
+  const { source, destination, playlistId, playlistName } = req.body;
+
+  console.log(`Transfer request: ${playlistId} from ${source} to ${destination}`);
+
+  let sourceTracks = [];
+  if (source === 'spotify') {
+    sourceTracks = await getSpotifyPlaylistTracks(spotifyApi, playlistId);
+  } else if (source === 'deezer') {
+    sourceTracks = await getDeezerPlaylistTracks(deezerAccessToken, playlistId);
+  } else if (source === 'youtube') {
+    const youtube = google.youtube({ version: 'v3', auth: oauth2Client });
+    sourceTracks = await getYouTubePlaylistTracks(youtube, playlistId);
+  }
+
+  const destinationTracks = [];
+  const youtube = google.youtube({ version: 'v3', auth: oauth2Client });
+  for (const track of sourceTracks) {
+    let foundTrack;
+    if (destination === 'spotify') {
+      foundTrack = await searchSpotifyTrack(spotifyApi, track);
+    } else if (destination === 'deezer') {
+      foundTrack = await searchDeezerTrack(track);
+    } else if (destination === 'youtube') {
+      foundTrack = await searchYouTubeTrack(youtube, track);
+    }
+    if (foundTrack) {
+      destinationTracks.push(foundTrack);
+    }
+  }
+
+  let newPlaylist;
+  if (destination === 'spotify') {
+    const trackUris = destinationTracks.map(t => t.uri).filter(Boolean);
+    newPlaylist = await createSpotifyPlaylist(spotifyApi, playlistName, trackUris);
+  } else if (destination === 'deezer') {
+    const trackIds = destinationTracks.map(t => t.id).filter(Boolean);
+    newPlaylist = await createDeezerPlaylist(deezerAccessToken, playlistName, trackIds);
+  } else if (destination === 'youtube') {
+    const videoIds = destinationTracks.map(t => t.id.videoId).filter(Boolean);
+    newPlaylist = await createYouTubePlaylist(youtube, playlistName, videoIds);
+  }
+
+  if (newPlaylist) {
+    res.json({ message: 'Transfer successful!', playlist: newPlaylist });
+  } else {
+    res.status(500).json({ message: 'Transfer failed.' });
+  }
+});
+
+// Sync Endpoints
+const SYNC_JOBS_PATH = path.join(__dirname, 'sync-jobs.json');
+
+app.get('/api/sync/jobs', async (req, res) => {
+  try {
+    const jobs = JSON.parse(await fs.readFile(SYNC_JOBS_PATH, 'utf-8'));
+    res.json(jobs);
+  } catch (error) {
+    console.error('Error reading sync jobs:', error);
+    res.status(500).json({ message: 'Failed to get sync jobs.' });
+  }
+});
+
+app.post('/api/sync/create', async (req, res) => {
+  try {
+    const { sourceService, sourcePlaylistId, destService, destPlaylistName } = req.body;
+    const newJob = {
+      id: uuidv4(),
+      sourceService,
+      sourcePlaylistId,
+      destService,
+      destPlaylistName,
+      status: 'active',
+      createdAt: new Date().toISOString(),
+      // We will add destPlaylistId after its creation
+    };
+    const jobs = JSON.parse(await fs.readFile(SYNC_JOBS_PATH, 'utf-8'));
+    jobs.push(newJob);
+    await fs.writeFile(SYNC_JOBS_PATH, JSON.stringify(jobs, null, 2));
+    res.status(201).json(newJob);
+  } catch (error) {
+    console.error('Error creating sync job:', error);
+    res.status(500).json({ message: 'Failed to create sync job.' });
+  }
+});
+
+// Settings Endpoint
+app.post('/api/settings/save', async (req, res) => {
+  const newSettings = req.body;
+  const envPath = path.join(__dirname, '.env');
+  
+  try {
+    let envContent = '';
+    try {
+      envContent = await fs.readFile(envPath, 'utf-8');
+    } catch (e) {
+      // .env file doesn't exist, we'll create it.
+    }
+
+    const lines = envContent.split(/\r?\n/);
+    const settingsMap = new Map();
+
+    for (const line of lines) {
+      if (line.trim() && !line.trim().startsWith('#')) {
+        const eqIndex = line.indexOf('=');
+        if (eqIndex > 0) {
+          const key = line.substring(0, eqIndex);
+          const value = line.substring(eqIndex + 1);
+          settingsMap.set(key, value);
+        }
+      }
+    }
+
+    for (const [key, value] of Object.entries(newSettings)) {
+      if (value) { // Only update if a value is provided
+        settingsMap.set(key, value);
+      }
+    }
+
+    const newEnvContent = Array.from(settingsMap.entries())
+      .map(([key, value]) => `${key}=${value}`)
+      .join('\n');
+
+    await fs.writeFile(envPath, newEnvContent);
+
+    res.json({ message: 'Settings saved successfully! Please restart the server.' });
+  } catch (error) {
+    console.error('Failed to save settings:', error);
+    res.status(500).json({ message: 'Failed to save settings.' });
+  }
+});
+
+// Share Endpoints
+const SHARES_PATH = path.join(__dirname, 'shares');
+
+app.post('/api/share/create', async (req, res) => {
+  const { service, playlistId } = req.body;
+  const { spotifyApi: freshSpotifyApi, deezerToken, youtubeClient } = await getApiClients(spotifyApi, oauth2Client);
+  
+  try {
+    let sourceTracks = [];
+    let playlistName = "A Shared Playlist";
+    if (service === 'spotify') sourceTracks = await apiHelpers.getSpotifyPlaylistTracks(freshSpotifyApi, playlistId);
+    else if (service === 'deezer') sourceTracks = await apiHelpers.getDeezerPlaylistTracks(deezerToken, playlistId);
+    else if (service === 'youtube') sourceTracks = await apiHelpers.getYouTubePlaylistTracks(youtubeClient, playlistId);
+    // TODO: Get real playlist name
+
+    const tracksWithLinks = await Promise.all(sourceTracks.map(async (track) => {
+      const spotifyTrack = service === 'spotify' ? track : await apiHelpers.searchSpotifyTrack(freshSpotifyApi, track);
+      const deezerTrack = service === 'deezer' ? track : await apiHelpers.searchDeezerTrack(track);
+      const youtubeTrack = service === 'youtube' ? track : await apiHelpers.searchYouTubeTrack(youtubeClient, track);
+
+      return {
+        name: track.name,
+        artist: track.artist,
+        links: {
+          spotify: spotifyTrack ? (spotifyTrack.external_urls ? spotifyTrack.external_urls.spotify : null) : null,
+          deezer: deezerTrack ? deezerTrack.link : null,
+          youtube: youtubeTrack ? `https://www.youtube.com/watch?v=${youtubeTrack.id.videoId}` : null,
+        }
+      };
+    }));
+
+    const shareId = uuidv4();
+    const shareData = {
+      id: shareId,
+      name: playlistName,
+      sourceService: service,
+      tracks: tracksWithLinks,
+    };
+
+    await fs.writeFile(path.join(SHARES_PATH, `${shareId}.json`), JSON.stringify(shareData, null, 2));
+    res.status(201).json({ shareId });
+  } catch (error) {
+    console.error('Failed to create share:', error);
+    res.status(500).json({ message: 'Failed to create share link.' });
+  }
+});
+
+app.get('/api/share/:shareId', async (req, res) => {
+  try {
+    const { shareId } = req.params;
+    const filePath = path.join(SHARES_PATH, `${shareId}.json`);
+    const data = await fs.readFile(filePath, 'utf-8');
+    res.json(JSON.parse(data));
+  } catch (error) {
+    console.error('Failed to get share data:', error);
+    res.status(404).json({ message: 'Share link not found.' });
+  }
+});
+
+
+// Search functions
+async function searchSpotifyTrack(track) {
+  if (track.isrc) {
+    const response = await spotifyApi.searchTracks(`isrc:${track.isrc}`);
+    if (response.body.tracks.items.length > 0) {
+      return response.body.tracks.items[0];
+    }
+  }
+  const query = `track:${track.name} artist:${track.artist}`;
+  const response = await spotifyApi.searchTracks(query);
+  return response.body.tracks.items[0] || null;
 }
 
-// Gestionnaire d'erreurs global
-app.use((err, req, res, next) => {
-  logger.error(err.stack);
-  res.status(500).json({ 
-    message: 'Une erreur interne s\'est produite',
-    error: process.env.NODE_ENV === 'development' ? err.message : {}
-  });
-});
+async function searchDeezerTrack(track) {
+  if (track.isrc) {
+    try {
+      const response = await axios.get(`https://api.deezer.com/track/isrc:${track.isrc}`);
+      if (response.data && !response.data.error) {
+        return response.data;
+      }
+    } catch (e) { /* ISRC not found, fallback to search */ }
+  }
+  const query = `artist:"${track.artist}" track:"${track.name}"`;
+  const response = await axios.get(`https://api.deezer.com/search?q=${encodeURIComponent(query)}`);
+  return response.data.data[0] || null;
+}
 
-// Initialisation
-async function startServer() {
+async function searchYouTubeTrack(track) {
+  const youtube = google.youtube({ version: 'v3', auth: oauth2Client });
+  const query = `${track.name} ${track.artist}`;
   try {
-    await initDatabase();
-    logger.info('Base de données initialisée');
-    
-    startSyncScheduler();
-    logger.info('Planificateur de synchronisation démarré');
-    
-    app.listen(PORT, () => {
-      logger.info(`Serveur démarré sur le port ${PORT}`);
+    const response = await youtube.search.list({
+      part: 'snippet',
+      q: query,
+      type: 'video',
+      maxResults: 1
     });
+    return response.data.items[0] || null;
   } catch (error) {
-    logger.error('Erreur lors du démarrage du serveur:', error);
-    process.exit(1);
+    console.error('Error searching YouTube:', error);
+    return null;
   }
 }
 
-startServer(); 
+// Playlist creation functions
+async function createSpotifyPlaylist(name, trackUris) {
+  try {
+    const me = await spotifyApi.getMe();
+    const newPlaylist = await spotifyApi.createPlaylist(me.body.id, { name });
+    await spotifyApi.addTracksToPlaylist(newPlaylist.body.id, trackUris);
+    return newPlaylist.body;
+  } catch (error) {
+    console.error('Error creating Spotify playlist:', error);
+    return null;
+  }
+}
+
+async function createDeezerPlaylist(accessToken, name, trackIds) {
+  try {
+    const response = await axios.post(`https://api.deezer.com/user/me/playlists?access_token=${accessToken}&title=${name}`);
+    const playlistId = response.data.id;
+    await axios.post(`https://api.deezer.com/playlist/${playlistId}/tracks?access_token=${accessToken}&songs=${trackIds.join(',')}`);
+    return { id: playlistId };
+  } catch (error) {
+    console.error('Error creating Deezer playlist:', error);
+    return null;
+  }
+}
+
+async function createYouTubePlaylist(youtube, name, videoIds) {
+  try {
+    const newPlaylist = await youtube.playlists.insert({
+      part: 'snippet,status',
+      requestBody: {
+        snippet: {
+          title: name,
+          description: 'Created by Syncer Music'
+        },
+        status: {
+          privacyStatus: 'private'
+        }
+      }
+    });
+
+    const playlistId = newPlaylist.data.id;
+    for (const videoId of videoIds) {
+      await youtube.playlistItems.insert({
+        part: 'snippet',
+        requestBody: {
+          snippet: {
+            playlistId: playlistId,
+            resourceId: {
+              kind: 'youtube#video',
+              videoId: videoId
+            }
+          }
+        }
+      });
+    }
+    return newPlaylist.data;
+  } catch (error) {
+    console.error('Error creating YouTube playlist:', error);
+    return null;
+  }
+}
+
+
+async function getSpotifyPlaylistTracks(playlistId) {
+  try {
+    const response = await spotifyApi.getPlaylistTracks(playlistId);
+    return response.body.items.map(item => ({
+      name: item.track.name,
+      artist: item.track.artists[0].name,
+      album: item.track.album.name,
+      isrc: item.track.external_ids.isrc
+    }));
+  } catch (error) {
+    console.error('Error getting Spotify playlist tracks:', error);
+    return [];
+  }
+}
+
+async function getDeezerPlaylistTracks(accessToken, playlistId) {
+  try {
+    const response = await axios.get(`https://api.deezer.com/playlist/${playlistId}/tracks?access_token=${accessToken}`);
+    return response.data.data.map(item => ({
+      name: item.title,
+      artist: item.artist.name,
+      album: item.album.title,
+      isrc: item.isrc
+    }));
+  } catch (error) {
+    console.error('Error getting Deezer playlist tracks:', error);
+    return [];
+  }
+}
+
+async function getYouTubePlaylistTracks(youtube, playlistId) {
+  try {
+    const response = await youtube.playlistItems.list({
+      playlistId: playlistId,
+      part: 'snippet',
+      maxResults: 50
+    });
+    return response.data.items.map(item => ({
+      name: item.snippet.title,
+      artist: item.snippet.videoOwnerChannelTitle.replace(' - Topic', ''), // Artist name is often in channel title
+      album: '', // YouTube API doesn't provide album info for playlist items
+      isrc: '' // Not available
+    }));
+  } catch (error) {
+    console.error('Error getting YouTube playlist tracks:', error);
+    return [];
+  }
+}
+
+
+app.get('/api/google/playlists', async (req, res) => {
+  if (!oauth2Client.credentials || !oauth2Client.credentials.access_token) {
+    return res.status(401).json({ error: 'Not authenticated with Google' });
+  }
+
+  const youtube = google.youtube({ version: 'v3', auth: oauth2Client });
+
+  try {
+    const response = await youtube.playlists.list({
+      mine: true,
+      part: 'snippet,contentDetails',
+      maxResults: 50
+    });
+    res.json(response.data.items);
+  } catch (error) {
+    console.error('Error fetching YouTube playlists:', error.message);
+    res.status(500).json({ error: 'Failed to fetch YouTube playlists' });
+  }
+});
+
+
+app.get('/api/deezer/playlists', async (req, res) => {
+  if (!deezerAccessToken) {
+    return res.status(401).json({ error: 'Not authenticated with Deezer' });
+  }
+
+  try {
+    const response = await axios.get(`https://api.deezer.com/user/me/playlists?access_token=${deezerAccessToken}`);
+    res.json(response.data.data);
+  } catch (error) {
+    console.error('Error fetching Deezer playlists:', error.message);
+    res.status(500).json({ error: 'Failed to fetch Deezer playlists' });
+  }
+});
+
+
+app.get('/api/spotify/playlists', (req, res) => {
+  spotifyApi.getMe()
+    .then(data => {
+      return spotifyApi.getUserPlaylists(data.body.id);
+    })
+    .then(data => {
+      const playlists = data.body.items;
+      res.json(playlists);
+    })
+    .catch(error => {
+      console.error('Error getting playlists:', error);
+      res.status(500).json({ error: 'Failed to get playlists' });
+    });
+});
+
+app.listen(port, () => {
+  console.log(`Server is running on port ${port}`);
+  startSyncEngine();
+}); 
