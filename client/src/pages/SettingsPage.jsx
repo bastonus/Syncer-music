@@ -9,9 +9,48 @@ const SettingsPage = () => {
     GOOGLE_CLIENT_ID: '',
     GOOGLE_CLIENT_SECRET: '',
   });
-  const [status, setStatus] = useState(''); // '', 'saving', 'success', 'error'
+  const [status, setStatus] = useState(''); // '', 'saving', 'success', 'error', 'restarting'
 
   // TODO: Add a useEffect to fetch current settings from the backend to check what's configured
+
+  const [logs, setLogs] = useState([]);
+
+  useEffect(() => {
+    const originalConsole = {
+      log: console.log,
+      error: console.error,
+      warn: console.warn,
+      info: console.info,
+    };
+
+    const consoleOverride = (type, ...args) => {
+      originalConsole[type](...args);
+      const message = args.map(arg => {
+        if (arg instanceof Error) {
+          return arg.stack || arg.message;
+        }
+        try {
+          return typeof arg === 'string' ? arg : JSON.stringify(arg, null, 2);
+        } catch (e) {
+          return String(arg);
+        }
+      }).join(' ');
+
+      setLogs(prevLogs => [...prevLogs, { type, message, timestamp: new Date() }]);
+    };
+
+    console.log = (...args) => consoleOverride('log', ...args);
+    console.error = (...args) => consoleOverride('error', ...args);
+    console.warn = (...args) => consoleOverride('warn', ...args);
+    console.info = (...args) => consoleOverride('info', ...args);
+
+    return () => {
+      console.log = originalConsole.log;
+      console.error = originalConsole.error;
+      console.warn = originalConsole.warn;
+      console.info = originalConsole.info;
+    };
+  }, []);
 
   const handleChange = (e) => {
     setSettings({ ...settings, [e.target.name]: e.target.value });
@@ -36,12 +75,29 @@ const SettingsPage = () => {
         body: JSON.stringify(settingsToSave),
       });
 
-      if (!response.ok) throw new Error('Failed to save settings.');
+      if (!response.ok) {
+        const errorBody = await response.text();
+        throw new Error(`Failed to save settings. Status: ${response.status}. Body: ${errorBody}`);
+      }
       
       setStatus('success');
     } catch (error) {
       console.error(error);
       setStatus('error');
+    }
+  };
+
+  const handleRestart = async () => {
+    setStatus('restarting');
+    try {
+      const response = await fetch('/api/server/restart', { method: 'POST' });
+      if (!response.ok) {
+        throw new Error('Failed to send restart command.');
+      }
+      // Don't expect a success status change here as the server will go down
+    } catch (error) {
+      console.error(error);
+      setStatus('error'); // If the restart command fails, show an error
     }
   };
 
@@ -78,8 +134,29 @@ const SettingsPage = () => {
         {status === 'saving' ? 'Saving...' : 'Save Settings'}
       </button>
 
-      {status === 'success' && <p style={{ color: 'green' }}>Settings saved successfully! Please restart the server.</p>}
+      {status === 'success' && (
+        <div style={{ marginTop: '10px' }}>
+          <p style={{ color: 'green', display: 'inline' }}>Settings saved successfully! Please restart the server.</p>
+          <button onClick={handleRestart} style={{ marginLeft: '10px' }}>
+            Restart Server
+          </button>
+        </div>
+      )}
       {status === 'error' && <p style={{ color: 'red' }}>Error saving settings. Check the console.</p>}
+      {status === 'restarting' && <p style={{ color: 'blue' }}>Server is restarting... Please wait a moment and refresh the page.</p>}
+
+      {logs.length > 0 && (
+        <div style={{ marginTop: '20px', backgroundColor: '#f0f0f0', border: '1px solid #ccc', padding: '10px', maxHeight: '300px', overflowY: 'auto' }}>
+          <h3>Console Output:</h3>
+          <pre style={{ whiteSpace: 'pre-wrap', wordWrap: 'break-word', fontSize: '12px' }}>
+            {logs.map((log, index) => (
+              <div key={index} style={{ color: log.type === 'error' ? 'red' : 'inherit', borderBottom: '1px solid #ddd', paddingTop: '5px', paddingBottom: '5px' }}>
+                <strong>[{log.timestamp.toLocaleTimeString()}] [{log.type.toUpperCase()}]:</strong> {log.message}
+              </div>
+            ))}
+          </pre>
+        </div>
+      )}
     </div>
   );
 };

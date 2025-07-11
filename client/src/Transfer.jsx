@@ -20,7 +20,7 @@ const Transfer = ({ spotifyPlaylists, deezerPlaylists, youtubePlaylists }) => {
     setSelectedPlaylist('');
   }, [source, spotifyPlaylists, deezerPlaylists, youtubePlaylists]);
 
-  const handleTransfer = () => {
+  const handleTransfer = async () => {
     if (!source || !destination || !selectedPlaylist) {
       alert('Please select source, destination, and a playlist.');
       return;
@@ -38,71 +38,110 @@ const Transfer = ({ spotifyPlaylists, deezerPlaylists, youtubePlaylists }) => {
 
     setStatus('transferring');
 
-    fetch('/api/transfer', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ 
-        source, 
-        destination, 
-        playlistId: selectedPlaylist,
-        playlistName: playlist.name || playlist.title || playlist.snippet.title
-      }),
-    })
-    .then(res => {
-      if (!res.ok) {
+    try {
+      const response = await fetch('/api/transfer', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+          source, 
+          destination, 
+          playlistId: selectedPlaylist,
+          playlistName: playlist.name || playlist.title || playlist.snippet.title
+        }),
+      });
+      
+      if (!response.ok) {
         throw new Error('Transfer failed');
       }
-      return res.json();
-    })
-    .then(data => {
+      
+      const data = await response.json();
       console.log(data);
       setStatus('success');
-    })
-    .catch(error => {
+    } catch (error) {
       console.error('Transfer error:', error);
       setStatus('error');
-    });
+    }
   };
 
   return (
     <div>
-      <h2>Transfer Playlists</h2>
-      <div>
-        <label>From: </label>
-        <select value={source} onChange={e => setSource(e.target.value)}>
+      <p>Move a playlist from one service to another</p>
+      
+      <div className="form-group">
+        <label className="form-label">From:</label>
+        <select 
+          value={source} 
+          onChange={e => setSource(e.target.value)}
+          className="form-select"
+          disabled={status === 'transferring'}
+        >
           <option value="">Select Source</option>
-          <option value="spotify">Spotify</option>
-          <option value="deezer">Deezer</option>
-          <option value="youtube">YouTube Music</option>
+          <option value="spotify">🎵 Spotify</option>
+          <option value="deezer">🎶 Deezer</option>
+          <option value="youtube">▶️ YouTube Music</option>
         </select>
       </div>
-      <div>
-        <label>To: </label>
-        <select value={destination} onChange={e => setDestination(e.target.value)}>
+
+      <div className="form-group">
+        <label className="form-label">To:</label>
+        <select 
+          value={destination} 
+          onChange={e => setDestination(e.target.value)}
+          className="form-select"
+          disabled={status === 'transferring'}
+        >
           <option value="">Select Destination</option>
-          <option value="spotify">Spotify</option>
-          <option value="deezer">Deezer</option>
-          <option value="youtube">YouTube Music</option>
+          <option value="spotify">🎵 Spotify</option>
+          <option value="deezer">🎶 Deezer</option>
+          <option value="youtube">▶️ YouTube Music</option>
         </select>
       </div>
+
       {source && (
-        <div>
-          <label>Select Playlist: </label>
-          <select value={selectedPlaylist} onChange={e => setSelectedPlaylist(e.target.value)}>
+        <div className="form-group">
+          <label className="form-label">Select Playlist:</label>
+          <select 
+            value={selectedPlaylist} 
+            onChange={e => setSelectedPlaylist(e.target.value)}
+            className="form-select"
+            disabled={status === 'transferring'}
+          >
             <option value="">Select a playlist</option>
             {sourcePlaylists.map(p => (
-              <option key={p.id} value={p.id}>{p.name || p.title || p.snippet.title}</option>
+              <option key={p.id} value={p.id}>
+                {p.name || p.title || p.snippet.title}
+              </option>
             ))}
           </select>
         </div>
       )}
-      <button onClick={handleTransfer} disabled={status === 'transferring'}>
-        {status === 'transferring' ? 'Transferring...' : 'Transfer'}
+
+      <button 
+        onClick={handleTransfer} 
+        disabled={status === 'transferring' || !selectedPlaylist}
+        className="btn btn-primary"
+      >
+        {status === 'transferring' ? (
+          <>
+            <span className="loading"></span>
+            Transferring...
+          </>
+        ) : (
+          '🚀 Start Transfer'
+        )}
       </button>
-      {status === 'success' && <p>Transfer successful!</p>}
-      {status === 'error' && <p>Transfer failed. Please try again.</p>}
+
+      {status === 'success' && (
+        <div className="status-success">
+          ✅ Transfer completed successfully!
+        </div>
+      )}
+      
+      {status === 'error' && (
+        <div className="status-error">
+          ❌ Transfer failed. Please try again.
+        </div>
+      )}
     </div>
   );
 };

@@ -39,42 +39,78 @@ const Share = ({ spotifyPlaylists, deezerPlaylists, youtubePlaylists }) => {
     }
   };
 
+  const copyToClipboard = () => {
+    navigator.clipboard.writeText(shareLink);
+    // You could add a toast notification here
+  };
+
   return (
     <div>
-      <h2>Share a Playlist</h2>
-      <p>Select a playlist to generate a unique shareable link.</p>
+      <p>Generate a shareable link for any playlist</p>
       
-      <div>
-        <label>Service: </label>
-        <select value={service} onChange={e => setService(e.target.value)}>
+      <div className="form-group">
+        <label className="form-label">Service:</label>
+        <select 
+          value={service} 
+          onChange={e => setService(e.target.value)}
+          className="form-select"
+          disabled={isLoading}
+        >
           <option value="">Select...</option>
-          <option value="spotify">Spotify</option>
-          <option value="deezer">Deezer</option>
-          <option value="youtube">YouTube Music</option>
+          <option value="spotify">🎵 Spotify</option>
+          <option value="deezer">🎶 Deezer</option>
+          <option value="youtube">▶️ YouTube Music</option>
         </select>
       </div>
 
       {service && (
-        <div>
-          <label>Playlist: </label>
-          <select value={playlistId} onChange={e => setPlaylistId(e.target.value)}>
+        <div className="form-group">
+          <label className="form-label">Playlist:</label>
+          <select 
+            value={playlistId} 
+            onChange={e => setPlaylistId(e.target.value)}
+            className="form-select"
+            disabled={isLoading}
+          >
             <option value="">Select...</option>
             {getPlaylistsByService(service).map(p => (
-              <option key={p.id} value={p.id}>{p.name || p.title || p.snippet.title}</option>
+              <option key={p.id} value={p.id}>
+                {p.name || p.title || p.snippet.title}
+              </option>
             ))}
           </select>
         </div>
       )}
 
-      <button onClick={handleGenerateLink} disabled={isLoading || !playlistId}>
-        {isLoading ? 'Generating...' : 'Generate Share Link'}
+      <button 
+        onClick={handleGenerateLink} 
+        disabled={isLoading || !playlistId}
+        className="btn btn-primary"
+      >
+        {isLoading ? (
+          <>
+            <span className="loading"></span>
+            Generating...
+          </>
+        ) : (
+          '🔗 Generate Share Link'
+        )}
       </button>
 
       {shareLink && (
-        <div>
-          <p>Your share link is ready:</p>
-          <input type="text" value={shareLink} readOnly />
-          <button onClick={() => navigator.clipboard.writeText(shareLink)}>Copy</button>
+        <div className="share-link">
+          <label className="form-label">Your share link:</label>
+          <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+            <input 
+              type="text" 
+              value={shareLink} 
+              readOnly 
+              style={{ flex: 1 }}
+            />
+            <button onClick={copyToClipboard} className="btn btn-primary">
+              📋 Copy
+            </button>
+          </div>
         </div>
       )}
     </div>

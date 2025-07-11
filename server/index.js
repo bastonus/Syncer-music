@@ -248,51 +248,61 @@ app.post('/api/sync/create', async (req, res) => {
 // Settings Endpoint
 app.post('/api/settings/save', async (req, res) => {
   const newSettings = req.body;
-  const envPath = path.join(__dirname, '.env');
-  
+  const envFilePath = path.join(__dirname, '.env');
+
   try {
-    let envContent = '';
+    let envFileContent = '';
+    // Read existing .env file if it exists
     try {
-      envContent = await fs.readFile(envPath, 'utf-8');
-    } catch (e) {
-      // .env file doesn't exist, we'll create it.
+      envFileContent = await fs.readFile(envFilePath, 'utf-8');
+    } catch (error) {
+      if (error.code !== 'ENOENT') {
+        throw error; // Rethrow if it's not a "file not found" error
+      }
+      // If the file doesn't exist, we'll create it.
     }
 
-    const lines = envContent.split(/\r?\n/);
+    const envLines = envFileContent.split('\n');
     const settingsMap = new Map();
 
-    for (const line of lines) {
-      if (line.trim() && !line.trim().startsWith('#')) {
-        const eqIndex = line.indexOf('=');
-        if (eqIndex > 0) {
-          const key = line.substring(0, eqIndex);
-          const value = line.substring(eqIndex + 1);
-          settingsMap.set(key, value);
-        }
+    // Load existing settings into a map
+    envLines.forEach(line => {
+      const trimmedLine = line.trim();
+      if (trimmedLine && !trimmedLine.startsWith('#')) {
+        const [key] = trimmedLine.split('=');
+        settingsMap.set(key.trim(), line);
       }
-    }
+    });
 
+    // Update with new settings
     for (const [key, value] of Object.entries(newSettings)) {
-      if (value) { // Only update if a value is provided
-        settingsMap.set(key, value);
+      if (value) {
+        settingsMap.set(key, `${key}=${value}`);
       }
     }
 
-    const newEnvContent = Array.from(settingsMap.entries())
-      .map(([key, value]) => `${key}=${value}`)
-      .join('\n');
+    const updatedEnvContent = Array.from(settingsMap.values()).join('\n');
+    await fs.writeFile(envFilePath, updatedEnvContent);
 
-    await fs.writeFile(envPath, newEnvContent);
+    res.status(200).json({ message: 'Settings saved successfully. Please restart the server to apply changes.' });
 
-    res.json({ message: 'Settings saved successfully! Please restart the server.' });
   } catch (error) {
-    console.error('Failed to save settings:', error);
-    res.status(500).json({ message: 'Failed to save settings.' });
+    console.error('Error saving settings:', error);
+    res.status(500).json({ message: 'Failed to save settings to .env file.' });
   }
 });
 
+app.post('/api/server/restart', (req, res) => {
+  console.log('Server restart requested from client.');
+  res.status(200).json({ message: 'Server is restarting...' });
+  // We exit the process so that nodemon can restart it automatically.
+  setTimeout(() => {
+    process.exit(1);
+  }, 500); // Wait a moment to ensure the response is sent
+});
+
 // Share Endpoints
-const SHARES_PATH = path.join(__dirname, 'shares');
+const SHARES_DIR = path.join(__dirname, 'shares');
 
 app.post('/api/share/create', async (req, res) => {
   const { service, playlistId } = req.body;
@@ -330,7 +340,7 @@ app.post('/api/share/create', async (req, res) => {
       tracks: tracksWithLinks,
     };
 
-    await fs.writeFile(path.join(SHARES_PATH, `${shareId}.json`), JSON.stringify(shareData, null, 2));
+    await fs.writeFile(path.join(SHARES_DIR, `${shareId}.json`), JSON.stringify(shareData, null, 2));
     res.status(201).json({ shareId });
   } catch (error) {
     console.error('Failed to create share:', error);
@@ -341,7 +351,7 @@ app.post('/api/share/create', async (req, res) => {
 app.get('/api/share/:shareId', async (req, res) => {
   try {
     const { shareId } = req.params;
-    const filePath = path.join(SHARES_PATH, `${shareId}.json`);
+    const filePath = path.join(SHARES_DIR, `${shareId}.json`);
     const data = await fs.readFile(filePath, 'utf-8');
     res.json(JSON.parse(data));
   } catch (error) {
@@ -351,162 +361,8 @@ app.get('/api/share/:shareId', async (req, res) => {
 });
 
 
-// Search functions
-async function searchSpotifyTrack(track) {
-  if (track.isrc) {
-    const response = await spotifyApi.searchTracks(`isrc:${track.isrc}`);
-    if (response.body.tracks.items.length > 0) {
-      return response.body.tracks.items[0];
-    }
-  }
-  const query = `track:${track.name} artist:${track.artist}`;
-  const response = await spotifyApi.searchTracks(query);
-  return response.body.tracks.items[0] || null;
-}
-
-async function searchDeezerTrack(track) {
-  if (track.isrc) {
-    try {
-      const response = await axios.get(`https://api.deezer.com/track/isrc:${track.isrc}`);
-      if (response.data && !response.data.error) {
-        return response.data;
-      }
-    } catch (e) { /* ISRC not found, fallback to search */ }
-  }
-  const query = `artist:"${track.artist}" track:"${track.name}"`;
-  const response = await axios.get(`https://api.deezer.com/search?q=${encodeURIComponent(query)}`);
-  return response.data.data[0] || null;
-}
-
-async function searchYouTubeTrack(track) {
-  const youtube = google.youtube({ version: 'v3', auth: oauth2Client });
-  const query = `${track.name} ${track.artist}`;
-  try {
-    const response = await youtube.search.list({
-      part: 'snippet',
-      q: query,
-      type: 'video',
-      maxResults: 1
-    });
-    return response.data.items[0] || null;
-  } catch (error) {
-    console.error('Error searching YouTube:', error);
-    return null;
-  }
-}
-
-// Playlist creation functions
-async function createSpotifyPlaylist(name, trackUris) {
-  try {
-    const me = await spotifyApi.getMe();
-    const newPlaylist = await spotifyApi.createPlaylist(me.body.id, { name });
-    await spotifyApi.addTracksToPlaylist(newPlaylist.body.id, trackUris);
-    return newPlaylist.body;
-  } catch (error) {
-    console.error('Error creating Spotify playlist:', error);
-    return null;
-  }
-}
-
-async function createDeezerPlaylist(accessToken, name, trackIds) {
-  try {
-    const response = await axios.post(`https://api.deezer.com/user/me/playlists?access_token=${accessToken}&title=${name}`);
-    const playlistId = response.data.id;
-    await axios.post(`https://api.deezer.com/playlist/${playlistId}/tracks?access_token=${accessToken}&songs=${trackIds.join(',')}`);
-    return { id: playlistId };
-  } catch (error) {
-    console.error('Error creating Deezer playlist:', error);
-    return null;
-  }
-}
-
-async function createYouTubePlaylist(youtube, name, videoIds) {
-  try {
-    const newPlaylist = await youtube.playlists.insert({
-      part: 'snippet,status',
-      requestBody: {
-        snippet: {
-          title: name,
-          description: 'Created by Syncer Music'
-        },
-        status: {
-          privacyStatus: 'private'
-        }
-      }
-    });
-
-    const playlistId = newPlaylist.data.id;
-    for (const videoId of videoIds) {
-      await youtube.playlistItems.insert({
-        part: 'snippet',
-        requestBody: {
-          snippet: {
-            playlistId: playlistId,
-            resourceId: {
-              kind: 'youtube#video',
-              videoId: videoId
-            }
-          }
-        }
-      });
-    }
-    return newPlaylist.data;
-  } catch (error) {
-    console.error('Error creating YouTube playlist:', error);
-    return null;
-  }
-}
-
-
-async function getSpotifyPlaylistTracks(playlistId) {
-  try {
-    const response = await spotifyApi.getPlaylistTracks(playlistId);
-    return response.body.items.map(item => ({
-      name: item.track.name,
-      artist: item.track.artists[0].name,
-      album: item.track.album.name,
-      isrc: item.track.external_ids.isrc
-    }));
-  } catch (error) {
-    console.error('Error getting Spotify playlist tracks:', error);
-    return [];
-  }
-}
-
-async function getDeezerPlaylistTracks(accessToken, playlistId) {
-  try {
-    const response = await axios.get(`https://api.deezer.com/playlist/${playlistId}/tracks?access_token=${accessToken}`);
-    return response.data.data.map(item => ({
-      name: item.title,
-      artist: item.artist.name,
-      album: item.album.title,
-      isrc: item.isrc
-    }));
-  } catch (error) {
-    console.error('Error getting Deezer playlist tracks:', error);
-    return [];
-  }
-}
-
-async function getYouTubePlaylistTracks(youtube, playlistId) {
-  try {
-    const response = await youtube.playlistItems.list({
-      playlistId: playlistId,
-      part: 'snippet',
-      maxResults: 50
-    });
-    return response.data.items.map(item => ({
-      name: item.snippet.title,
-      artist: item.snippet.videoOwnerChannelTitle.replace(' - Topic', ''), // Artist name is often in channel title
-      album: '', // YouTube API doesn't provide album info for playlist items
-      isrc: '' // Not available
-    }));
-  } catch (error) {
-    console.error('Error getting YouTube playlist tracks:', error);
-    return [];
-  }
-}
-
+// All helper functions are now in api-helpers.js and imported at the top
+// No need to redefine them here
 
 app.get('/api/google/playlists', async (req, res) => {
   if (!oauth2Client.credentials || !oauth2Client.credentials.access_token) {

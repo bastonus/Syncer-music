@@ -1,11 +1,10 @@
 import { useState } from 'react';
-import { Link } from 'react-router-dom'; // Import Link
+import { Link } from 'react-router-dom';
 import Transfer from '../Transfer';
 import Sync from '../Sync';
-import Share from '../Share'; // Assuming Share component is created
+import Share from '../Share';
 
 const HomePage = () => {
-  // All the state and functions from App.jsx will go here
   const [playlists, setPlaylists] = useState([]);
   const [deezerPlaylists, setDeezerPlaylists] = useState([]);
   const [youtubePlaylists, setYoutubePlaylists] = useState([]);
@@ -28,40 +27,132 @@ const HomePage = () => {
   };
 
   return (
-    <div>
-      <nav style={{ marginBottom: '20px' }}>
-        <Link to="/settings">Go to Settings</Link>
+    <div className="fade-in">
+      {/* Navigation */}
+      <nav className="nav">
+        <div className="container">
+          <Link to="/settings" className="nav-link">⚙️ Settings</Link>
+        </div>
       </nav>
-      <h1>Syncer Music</h1>
-      <p>Transfer, Sync, and Share your playlists between Spotify, Deezer, and YouTube Music.</p>
-      <button onClick={handleLogin}>Login with Spotify</button>
-      <button onClick={handleDeezerLogin}>Login with Deezer</button>
-      <button onClick={handleGoogleLogin}>Login with YouTube Music</button>
 
-      <hr />
-      <button onClick={() => fetchPlaylists('spotify')}>Fetch Spotify Playlists</button>
-      <button onClick={() => fetchPlaylists('deezer')}>Fetch Deezer Playlists</button>
-      <button onClick={() => fetchPlaylists('google')}>Fetch YouTube Playlists</button>
+      <div className="container">
+        {/* Hero Section */}
+        <div className="hero">
+          <h1>Syncer Music</h1>
+          <p>
+            Transfer, sync, and share your playlists seamlessly between Spotify, Deezer, and YouTube Music. 
+            Keep your music library synchronized across all platforms.
+          </p>
+        </div>
 
-      <hr />
-      <Transfer 
-        spotifyPlaylists={playlists} 
-        deezerPlaylists={deezerPlaylists} 
-        youtubePlaylists={youtubePlaylists} 
-      />
-      <hr />
-      <Sync
-        spotifyPlaylists={playlists}
-        deezerPlaylists={deezerPlaylists}
-        youtubePlaylists={youtubePlaylists}
-      />
-      <hr />
-      <Share
-        spotifyPlaylists={playlists}
-        deezerPlaylists={deezerPlaylists}
-        youtubePlaylists={youtubePlaylists}
-      />
-      {/* The list displays can be removed or kept as is */}
+        {/* Authentication Section */}
+        <div className="card">
+          <h2>🔐 Connect Your Accounts</h2>
+          <p>Connect to your music streaming services to get started</p>
+          <div className="service-buttons">
+            <button onClick={handleLogin} className="btn-service btn-spotify">
+              🎵 Connect Spotify
+            </button>
+            <button onClick={handleDeezerLogin} className="btn-service btn-deezer">
+              🎶 Connect Deezer
+            </button>
+            <button onClick={handleGoogleLogin} className="btn-service btn-youtube">
+              ▶️ Connect YouTube Music
+            </button>
+          </div>
+        </div>
+
+        {/* Fetch Playlists Section */}
+        <div className="card">
+          <h2>📚 Load Your Playlists</h2>
+          <p>Fetch your playlists from connected services</p>
+          <div className="service-buttons">
+            <button onClick={() => fetchPlaylists('spotify')} className="btn-service btn-spotify">
+              📥 Fetch Spotify Playlists
+            </button>
+            <button onClick={() => fetchPlaylists('deezer')} className="btn-service btn-deezer">
+              📥 Fetch Deezer Playlists
+            </button>
+            <button onClick={() => fetchPlaylists('google')} className="btn-service btn-youtube">
+              📥 Fetch YouTube Playlists
+            </button>
+          </div>
+        </div>
+
+        {/* Main Features Grid */}
+        <div className="grid grid-3">
+          {/* Transfer */}
+          <div className="card">
+            <h2>🔄 Transfer</h2>
+            <Transfer 
+              spotifyPlaylists={playlists} 
+              deezerPlaylists={deezerPlaylists} 
+              youtubePlaylists={youtubePlaylists} 
+            />
+          </div>
+
+          {/* Sync */}
+          <div className="card">
+            <h2>🔄 Real-time Sync</h2>
+            <Sync
+              spotifyPlaylists={playlists}
+              deezerPlaylists={deezerPlaylists}
+              youtubePlaylists={youtubePlaylists}
+            />
+          </div>
+
+          {/* Share */}
+          <div className="card">
+            <h2>🔗 Share</h2>
+            <Share
+              spotifyPlaylists={playlists}
+              deezerPlaylists={deezerPlaylists}
+              youtubePlaylists={youtubePlaylists}
+            />
+          </div>
+        </div>
+
+        {/* Playlist Overview */}
+        {(playlists.length > 0 || deezerPlaylists.length > 0 || youtubePlaylists.length > 0) && (
+          <div className="grid grid-3">
+            {playlists.length > 0 && (
+              <div className="card">
+                <h2>🎵 Spotify Playlists ({playlists.length})</h2>
+                <ul className="playlist-list">
+                  {playlists.slice(0, 5).map(playlist => (
+                    <li key={playlist.id} className="playlist-item">{playlist.name}</li>
+                  ))}
+                  {playlists.length > 5 && <li className="playlist-item">...and {playlists.length - 5} more</li>}
+                </ul>
+              </div>
+            )}
+
+            {deezerPlaylists.length > 0 && (
+              <div className="card">
+                <h2>🎶 Deezer Playlists ({deezerPlaylists.length})</h2>
+                <ul className="playlist-list">
+                  {deezerPlaylists.slice(0, 5).map(playlist => (
+                    <li key={playlist.id} className="playlist-item">{playlist.title}</li>
+                  ))}
+                  {deezerPlaylists.length > 5 && <li className="playlist-item">...and {deezerPlaylists.length - 5} more</li>}
+                </ul>
+              </div>
+            )}
+
+            {youtubePlaylists.length > 0 && (
+              <div className="card">
+                <h2>▶️ YouTube Playlists ({youtubePlaylists.length})</h2>
+                <ul className="playlist-list">
+                  {youtubePlaylists.slice(0, 5).map(playlist => (
+                    <li key={playlist.id} className="playlist-item">{playlist.snippet.title}</li>
+                  ))}
+                  {youtubePlaylists.length > 5 && <li className="playlist-item">...and {youtubePlaylists.length - 5} more</li>}
+                </ul>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
     </div>
   );
 };
