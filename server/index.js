@@ -58,7 +58,14 @@ app.get('/', (req, res) => {
   res.send('Hello from Syncer Music Server!');
 });
 
+// Legacy route for backward compatibility
 app.get('/auth/spotify', async (req, res) => {
+  const { spotify } = await getApiClients();
+  res.redirect(spotify.createAuthorizeURL(scopes));
+});
+
+// New serverless-compatible route
+app.get('/api/spotify-auth', async (req, res) => {
   const { spotify } = await getApiClients();
   res.redirect(spotify.createAuthorizeURL(scopes));
 });
@@ -90,6 +97,37 @@ app.get('/auth/spotify/callback', async (req, res) => {
     console.log(
       `Sucessfully retreived access token. Expires in ${data.body['expires_in']} s.`
     );
+    res.redirect('http://localhost:5173'); // Redirect to frontend
+
+  }).catch(error => {
+    console.error('Error getting Tokens:', error);
+    res.send(`Error getting Tokens: ${error}`);
+  });
+});
+
+// New serverless-compatible callback route
+app.get('/api/spotify-callback', async (req, res) => {
+  const error = req.query.error;
+  const code = req.query.code;
+
+  if (error) {
+    console.error('Callback Error:', error);
+    res.send(`Callback Error: ${error}`);
+    return;
+  }
+
+  const { spotify } = await getApiClients();
+  spotify.authorizationCodeGrant(code).then(async data => {
+    const tokens = {
+      access_token: data.body['access_token'],
+      refresh_token: data.body['refresh_token'],
+      expires_at: Date.now() + data.body['expires_in'] * 1000,
+    };
+    spotify.setAccessToken(tokens.access_token);
+    spotify.setRefreshToken(tokens.refresh_token);
+    await saveTokens('spotify', tokens);
+
+    console.log('Successfully retrieved access token');
     res.redirect('http://localhost:5173'); // Redirect to frontend
 
   }).catch(error => {
@@ -425,7 +463,7 @@ app.get('/api/google/playlist/:playlistId', async (req, res) => {
   }
 });
 
-app.get('/api/auth/status', async (req, res) => {
+app.get('/api/auth-status', async (req, res) => {
   try {
     const tokens = await getTokens();
     const status = {
@@ -437,6 +475,39 @@ app.get('/api/auth/status', async (req, res) => {
   } catch (error) {
     console.error('Error fetching auth status:', error);
     res.status(500).json({ message: 'Failed to fetch auth status' });
+  }
+});
+
+// New serverless-compatible playlist tracks endpoint
+app.get('/api/playlist-tracks', async (req, res) => {
+  const { service, playlistId } = req.query;
+  
+  if (!service || !playlistId) {
+    return res.status(400).json({ message: 'Service and playlistId parameters required' });
+  }
+
+  try {
+    const apiClients = await getApiClients();
+    let tracks;
+
+    switch (service) {
+      case 'spotify':
+        tracks = await getSpotifyPlaylistTracks(apiClients.spotify, playlistId);
+        break;
+      case 'deezer':
+        tracks = await getDeezerPlaylistTracks(apiClients.deezerToken, playlistId);
+        break;
+      case 'google':
+        tracks = await getYouTubePlaylistTracks(apiClients.youtube, playlistId);
+        break;
+      default:
+        return res.status(400).json({ message: 'Invalid service' });
+    }
+
+    res.json(tracks);
+  } catch (error) {
+    console.error(`Error fetching tracks for ${service} playlist ${playlistId}:`, error.message);
+    res.status(500).json({ message: `Failed to fetch tracks: ${error.message}` });
   }
 });
 
@@ -473,6 +544,59 @@ app.get('/api/spotify/playlists', async (req, res) => {
       console.error('Error getting playlists:', error);
       res.status(500).json({ error: 'Failed to get playlists' });
     });
+});
+
+// New serverless-compatible playlists endpoint
+app.get('/api/playlists', async (req, res) => {
+  const { service } = req.query;
+  
+  if (!service) {
+    return res.status(400).json({ message: 'Service parameter required' });
+  }
+
+  try {
+    const apiClients = await getApiClients();
+    let playlists;
+
+    switch (service) {
+      case 'spotify':
+        if (!apiClients.spotify.getAccessToken()) {
+          return res.status(401).json({ message: 'Spotify not authenticated' });
+        }
+        const userData = await apiClients.spotify.getMe();
+        const playlistData = await apiClients.spotify.getUserPlaylists(userData.body.id);
+        playlists = playlistData.body.items;
+        break;
+
+      case 'deezer':
+        if (!apiClients.deezerToken) {
+          return res.status(401).json({ message: 'Deezer not authenticated' });
+        }
+        const deezerResponse = await axios.get(`https://api.deezer.com/user/me/playlists?access_token=${apiClients.deezerToken}`);
+        playlists = deezerResponse.data.data;
+        break;
+
+      case 'google':
+        if (!apiClients.youtube) {
+          return res.status(401).json({ message: 'Google not authenticated' });
+        }
+        const youtubeResponse = await apiClients.youtube.playlists.list({
+          part: 'snippet,contentDetails',
+          mine: true,
+          maxResults: 50,
+        });
+        playlists = youtubeResponse.data.items;
+        break;
+
+      default:
+        return res.status(400).json({ message: 'Invalid service' });
+    }
+
+    res.json(playlists);
+  } catch (error) {
+    console.error(`Error fetching ${service} playlists:`, error.message);
+    res.status(500).json({ message: `Failed to fetch ${service} playlists` });
+  }
 });
 
 app.listen(port, () => {

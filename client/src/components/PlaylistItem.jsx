@@ -23,7 +23,7 @@ const PlaylistItem = ({
     if (shouldExpand && tracks.length === 0) {
       setIsLoading(true);
       try {
-        const response = await fetch(`/api/${serviceId}/playlist/${playlist.id}`);
+        const response = await fetch(`/api/playlist-tracks?service=${serviceId}&playlistId=${playlist.id}`);
         if (!response.ok) throw new Error('Failed to fetch tracks');
         const fetchedTracks = await response.json();
         setTracks(fetchedTracks);
