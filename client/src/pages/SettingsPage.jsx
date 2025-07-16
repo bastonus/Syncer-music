@@ -109,6 +109,15 @@ const SettingsPage = () => {
       <div style={{ marginBottom: '20px' }}>
         <h2>Spotify</h2>
         <p>Get your credentials from the <a href="https://developer.spotify.com/dashboard/" target="_blank" rel="noopener noreferrer">Spotify Developer Dashboard</a>.</p>
+        
+        <div style={{ backgroundColor: '#f5f5f5', border: '1px solid #ddd', padding: '10px', borderRadius: '5px', margin: '15px 0' }}>
+          <p style={{ marginTop: 0, fontWeight: 'bold' }}>Required Spotify Dashboard URI:</p>
+          <strong>Redirect URIs:</strong>
+          <ul style={{ margin: '5px 0', paddingLeft: '20px' }}>
+            <li><code>http://localhost:3001/auth/spotify/callback</code></li>
+          </ul>
+        </div>
+        
         <input name="SPOTIFY_CLIENT_ID" value={settings.SPOTIFY_CLIENT_ID} onChange={handleChange} placeholder="Spotify Client ID" style={{ width: '300px', marginBottom: '5px' }} />
         <br />
         <input name="SPOTIFY_CLIENT_SECRET" value={settings.SPOTIFY_CLIENT_SECRET} onChange={handleChange} placeholder="Spotify Client Secret" type="password" style={{ width: '300px' }} />
@@ -117,6 +126,20 @@ const SettingsPage = () => {
       <div style={{ marginBottom: '20px' }}>
         <h2>Deezer</h2>
         <p>Get your credentials from the <a href="https://developers.deezer.com/myapps" target="_blank" rel="noopener noreferrer">Deezer for Developers</a> portal.</p>
+        
+        <div style={{ backgroundColor: '#f5f5f5', border: '1px solid #ddd', padding: '10px', borderRadius: '5px', margin: '15px 0' }}>
+          <p style={{ marginTop: 0, fontWeight: 'bold' }}>Required Deezer App URIs:</p>
+          <p style={{ marginBottom: '5px' }}>Add these values in your Deezer application settings:</p>
+          <strong>Application Domain:</strong>
+          <ul style={{ margin: '5px 0', paddingLeft: '20px' }}>
+            <li><code>localhost</code></li>
+          </ul>
+          <strong>Redirect URI after authentication:</strong>
+          <ul style={{ margin: '5px 0', paddingLeft: '20px' }}>
+            <li><code>http://localhost:3001/auth/deezer/callback</code></li>
+          </ul>
+        </div>
+
         <input name="DEEZER_APP_ID" value={settings.DEEZER_APP_ID} onChange={handleChange} placeholder="Deezer App ID" style={{ width: '300px', marginBottom: '5px' }} />
         <br />
         <input name="DEEZER_SECRET_KEY" value={settings.DEEZER_SECRET_KEY} onChange={handleChange} placeholder="Deezer Secret Key" type="password" style={{ width: '300px' }} />
@@ -125,6 +148,21 @@ const SettingsPage = () => {
       <div style={{ marginBottom: '20px' }}>
         <h2>YouTube Music (Google)</h2>
         <p>Get your credentials from the <a href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noopener noreferrer">Google Cloud Console</a>.</p>
+        
+        <div style={{ backgroundColor: '#f5f5f5', border: '1px solid #ddd', padding: '10px', borderRadius: '5px', margin: '15px 0' }}>
+          <p style={{ marginTop: 0, fontWeight: 'bold' }}>Required Google Console URIs:</p>
+          <p style={{ marginBottom: '5px' }}>Add these values in your Google Cloud API credentials settings:</p>
+          <strong>Authorized JavaScript origins:</strong>
+          <ul style={{ margin: '5px 0', paddingLeft: '20px' }}>
+            <li><code>http://localhost:3001</code></li>
+            <li><code>http://localhost:5173</code></li>
+          </ul>
+          <strong>Authorized redirect URIs:</strong>
+          <ul style={{ margin: '5px 0', paddingLeft: '20px' }}>
+            <li><code>http://localhost:3001/auth/google/callback</code></li>
+          </ul>
+        </div>
+        
         <input name="GOOGLE_CLIENT_ID" value={settings.GOOGLE_CLIENT_ID} onChange={handleChange} placeholder="Google Client ID" style={{ width: '300px', marginBottom: '5px' }} />
         <br />
         <input name="GOOGLE_CLIENT_SECRET" value={settings.GOOGLE_CLIENT_SECRET} onChange={handleChange} placeholder="Google Client Secret" type="password" style={{ width: '300px' }} />

@@ -2,18 +2,22 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const axios = require('axios');
-const { google } = require('googleapis');
-const { spotifyApi, oauth2Client } = require('./api-clients');
-const fs = require('fs/promises');
 const path = require('path');
+const fs = require('fs/promises');
 const { v4: uuidv4 } = require('uuid');
-const { startSyncEngine } = require('./sync-engine');
-const { saveTokens } = require('./auth-manager');
+const { google } = require('googleapis');
+const { 
+  saveTokens, 
+  getApiClients, 
+  getTokens,
+  GOOGLE_REDIRECT_URI
+} = require('./auth-manager');
 const { 
   getSpotifyPlaylistTracks, searchSpotifyTrack, createSpotifyPlaylist,
   getDeezerPlaylistTracks, searchDeezerTrack, createDeezerPlaylist,
   getYouTubePlaylistTracks, searchYouTubeTrack, createYouTubePlaylist
 } = require('./api-helpers');
+const { startSyncEngine } = require('./sync-engine');
 
 const app = express();
 const port = process.env.PORT || 3001;
@@ -45,15 +49,21 @@ const scopes = [
 app.use(cors());
 app.use(express.json());
 
+// Load and set API clients and tokens on startup
+getApiClients()
+  .then(() => console.log('API clients initialized successfully.'))
+  .catch(error => console.error('Failed to initialize API clients:', error));
+
 app.get('/', (req, res) => {
   res.send('Hello from Syncer Music Server!');
 });
 
-app.get('/auth/spotify', (req, res) => {
-  res.redirect(spotifyApi.createAuthorizeURL(scopes));
+app.get('/auth/spotify', async (req, res) => {
+  const { spotify } = await getApiClients();
+  res.redirect(spotify.createAuthorizeURL(scopes));
 });
 
-app.get('/auth/spotify/callback', (req, res) => {
+app.get('/auth/spotify/callback', async (req, res) => {
   const error = req.query.error;
   const code = req.query.code;
 
@@ -63,14 +73,15 @@ app.get('/auth/spotify/callback', (req, res) => {
     return;
   }
 
-  spotifyApi.authorizationCodeGrant(code).then(async data => {
+  const { spotify } = await getApiClients();
+  spotify.authorizationCodeGrant(code).then(async data => {
     const tokens = {
       access_token: data.body['access_token'],
       refresh_token: data.body['refresh_token'],
       expires_at: Date.now() + data.body['expires_in'] * 1000,
     };
-    spotifyApi.setAccessToken(tokens.access_token);
-    spotifyApi.setRefreshToken(tokens.refresh_token);
+    spotify.setAccessToken(tokens.access_token);
+    spotify.setRefreshToken(tokens.refresh_token);
     await saveTokens('spotify', tokens);
 
     console.log('access_token:', tokens.access_token);
@@ -135,22 +146,24 @@ const googleAuthScopes = [
 
 let googleAuthTokens = {};
 
-app.get('/auth/google', (req, res) => {
-  const url = oauth2Client.generateAuthUrl({
+app.get('/auth/google', async (req, res) => {
+  const { google } = await getApiClients();
+  const url = google.generateAuthUrl({
     access_type: 'offline',
-    scope: googleAuthScopes
+    scope: googleAuthScopes,
+    prompt: 'consent',
+    redirect_uri: GOOGLE_REDIRECT_URI
   });
   res.redirect(url);
 });
 
 app.get('/auth/google/callback', async (req, res) => {
   const { code } = req.query;
+  const { google } = await getApiClients();
   try {
-    const { tokens } = await oauth2Client.getToken(code);
-    oauth2Client.setCredentials(tokens);
+    const { tokens } = await google.getToken(code);
+    google.setCredentials(tokens);
     await saveTokens('google', tokens);
-    googleAuthTokens = tokens;
-    console.log('Google Auth Tokens:', googleAuthTokens);
     res.redirect('http://localhost:5173');
   } catch (error) {
     console.error('Google auth error:', error.message);
@@ -158,32 +171,53 @@ app.get('/auth/google/callback', async (req, res) => {
   }
 });
 
+// Get Playlist Tracks Endpoints
+app.get('/api/:service/playlist/:playlistId', async (req, res) => {
+  const { service, playlistId } = req.params;
+  try {
+    const apiClients = await getApiClients();
+    let tracks;
+    switch (service) {
+      case 'spotify':
+        tracks = await getSpotifyPlaylistTracks(apiClients.spotify, playlistId);
+        break;
+      case 'deezer':
+        tracks = await getDeezerPlaylistTracks(apiClients.deezerToken, playlistId);
+        break;
+      case 'google':
+        tracks = await getYouTubePlaylistTracks(apiClients.youtube, playlistId);
+        break;
+      default:
+        throw new Error('Invalid service');
+    }
+    res.json(tracks);
+  } catch (error) {
+    console.error(`Error fetching tracks for ${service} playlist ${playlistId}:`, error.message);
+    res.status(500).json({ message: `Failed to fetch tracks: ${error.message}` });
+  }
+});
+
 // Transfer Endpoint
 app.post('/api/transfer', async (req, res) => {
-  const { source, destination, playlistId, playlistName } = req.body;
+  const { source, destination, tracks, playlistName } = req.body;
 
-  console.log(`Transfer request: ${playlistId} from ${source} to ${destination}`);
-
-  let sourceTracks = [];
-  if (source === 'spotify') {
-    sourceTracks = await getSpotifyPlaylistTracks(spotifyApi, playlistId);
-  } else if (source === 'deezer') {
-    sourceTracks = await getDeezerPlaylistTracks(deezerAccessToken, playlistId);
-  } else if (source === 'youtube') {
-    const youtube = google.youtube({ version: 'v3', auth: oauth2Client });
-    sourceTracks = await getYouTubePlaylistTracks(youtube, playlistId);
+  if (!tracks || tracks.length === 0) {
+    return res.status(400).json({ message: 'No tracks provided for transfer.' });
   }
 
+  console.log(`Transfer request: ${tracks.length} tracks from ${source} to ${destination}`);
+
   const destinationTracks = [];
-  const youtube = google.youtube({ version: 'v3', auth: oauth2Client });
-  for (const track of sourceTracks) {
+  const apiClients = await getApiClients();
+
+  for (const track of tracks) {
     let foundTrack;
     if (destination === 'spotify') {
-      foundTrack = await searchSpotifyTrack(spotifyApi, track);
+      foundTrack = await searchSpotifyTrack(apiClients.spotify, track);
     } else if (destination === 'deezer') {
-      foundTrack = await searchDeezerTrack(track);
-    } else if (destination === 'youtube') {
-      foundTrack = await searchYouTubeTrack(youtube, track);
+      foundTrack = await searchDeezerTrack(apiClients.deezerToken, track);
+    } else if (destination === 'google') {
+      foundTrack = await searchYouTubeTrack(apiClients.youtube, track);
     }
     if (foundTrack) {
       destinationTracks.push(foundTrack);
@@ -193,13 +227,13 @@ app.post('/api/transfer', async (req, res) => {
   let newPlaylist;
   if (destination === 'spotify') {
     const trackUris = destinationTracks.map(t => t.uri).filter(Boolean);
-    newPlaylist = await createSpotifyPlaylist(spotifyApi, playlistName, trackUris);
+    newPlaylist = await createSpotifyPlaylist(apiClients.spotify, playlistName, trackUris);
   } else if (destination === 'deezer') {
     const trackIds = destinationTracks.map(t => t.id).filter(Boolean);
-    newPlaylist = await createDeezerPlaylist(deezerAccessToken, playlistName, trackIds);
-  } else if (destination === 'youtube') {
+    newPlaylist = await createDeezerPlaylist(apiClients.deezerToken, playlistName, trackIds);
+  } else if (destination === 'google') {
     const videoIds = destinationTracks.map(t => t.id.videoId).filter(Boolean);
-    newPlaylist = await createYouTubePlaylist(youtube, playlistName, videoIds);
+    newPlaylist = await createYouTubePlaylist(apiClients.youtube, playlistName, videoIds);
   }
 
   if (newPlaylist) {
@@ -306,20 +340,20 @@ const SHARES_DIR = path.join(__dirname, 'shares');
 
 app.post('/api/share/create', async (req, res) => {
   const { service, playlistId } = req.body;
-  const { spotifyApi: freshSpotifyApi, deezerToken, youtubeClient } = await getApiClients(spotifyApi, oauth2Client);
+  const apiClients = await getApiClients();
   
   try {
     let sourceTracks = [];
     let playlistName = "A Shared Playlist";
-    if (service === 'spotify') sourceTracks = await apiHelpers.getSpotifyPlaylistTracks(freshSpotifyApi, playlistId);
-    else if (service === 'deezer') sourceTracks = await apiHelpers.getDeezerPlaylistTracks(deezerToken, playlistId);
-    else if (service === 'youtube') sourceTracks = await apiHelpers.getYouTubePlaylistTracks(youtubeClient, playlistId);
+    if (service === 'spotify') sourceTracks = await getSpotifyPlaylistTracks(apiClients.spotify, playlistId);
+    else if (service === 'deezer') sourceTracks = await getDeezerPlaylistTracks(apiClients.deezerToken, playlistId);
+    else if (service === 'youtube') sourceTracks = await getYouTubePlaylistTracks(apiClients.youtube, playlistId);
     // TODO: Get real playlist name
 
     const tracksWithLinks = await Promise.all(sourceTracks.map(async (track) => {
-      const spotifyTrack = service === 'spotify' ? track : await apiHelpers.searchSpotifyTrack(freshSpotifyApi, track);
-      const deezerTrack = service === 'deezer' ? track : await apiHelpers.searchDeezerTrack(track);
-      const youtubeTrack = service === 'youtube' ? track : await apiHelpers.searchYouTubeTrack(youtubeClient, track);
+      const spotifyTrack = service === 'spotify' ? track : await searchSpotifyTrack(apiClients.spotify, track);
+      const deezerTrack = service === 'deezer' ? track : await searchDeezerTrack(track);
+      const youtubeTrack = service === 'youtube' ? track : await searchYouTubeTrack(apiClients.youtube, track);
 
       return {
         name: track.name,
@@ -356,42 +390,64 @@ app.get('/api/share/:shareId', async (req, res) => {
     res.json(JSON.parse(data));
   } catch (error) {
     console.error('Failed to get share data:', error);
-    res.status(404).json({ message: 'Share link not found.' });
+    res.status(404).json({ message: 'Share link not found or expired.' });
   }
 });
 
-
-// All helper functions are now in api-helpers.js and imported at the top
-// No need to redefine them here
-
 app.get('/api/google/playlists', async (req, res) => {
-  if (!oauth2Client.credentials || !oauth2Client.credentials.access_token) {
-    return res.status(401).json({ error: 'Not authenticated with Google' });
-  }
-
-  const youtube = google.youtube({ version: 'v3', auth: oauth2Client });
-
+  const { youtube } = await getApiClients();
   try {
     const response = await youtube.playlists.list({
-      mine: true,
       part: 'snippet,contentDetails',
-      maxResults: 50
+      mine: true,
+      maxResults: 50,
     });
     res.json(response.data.items);
   } catch (error) {
     console.error('Error fetching YouTube playlists:', error.message);
-    res.status(500).json({ error: 'Failed to fetch YouTube playlists' });
+    res.status(500).json({ message: 'Failed to fetch YouTube playlists' });
   }
 });
 
+app.get('/api/google/playlist/:playlistId', async (req, res) => {
+  try {
+    const { playlistId } = req.params;
+    const youtube = google.youtube({ version: 'v3', auth: oauth2Client });
+    const response = await youtube.playlistItems.list({
+      part: 'snippet',
+      playlistId: playlistId,
+      maxResults: 50 // The YouTube API max per page is 50
+    });
+    res.json(response.data.items);
+  } catch (error) {
+    console.error(`Error fetching YouTube playlist items for ${req.params.playlistId}:`, error.message);
+    res.status(500).json({ message: 'Failed to fetch YouTube playlist items' });
+  }
+});
+
+app.get('/api/auth/status', async (req, res) => {
+  try {
+    const tokens = await getTokens();
+    const status = {
+      spotify: !!(tokens.spotify && tokens.spotify.access_token),
+      deezer: !!(tokens.deezer && tokens.deezer.access_token),
+      google: !!(tokens.google && tokens.google.access_token),
+    };
+    res.json(status);
+  } catch (error) {
+    console.error('Error fetching auth status:', error);
+    res.status(500).json({ message: 'Failed to fetch auth status' });
+  }
+});
 
 app.get('/api/deezer/playlists', async (req, res) => {
-  if (!deezerAccessToken) {
-    return res.status(401).json({ error: 'Not authenticated with Deezer' });
+  const { deezerToken } = await getApiClients();
+  if (!deezerToken) {
+    return res.status(401).json({ message: 'Deezer not authenticated' });
   }
 
   try {
-    const response = await axios.get(`https://api.deezer.com/user/me/playlists?access_token=${deezerAccessToken}`);
+    const response = await axios.get(`https://api.deezer.com/user/me/playlists?access_token=${deezerToken}`);
     res.json(response.data.data);
   } catch (error) {
     console.error('Error fetching Deezer playlists:', error.message);
@@ -400,10 +456,14 @@ app.get('/api/deezer/playlists', async (req, res) => {
 });
 
 
-app.get('/api/spotify/playlists', (req, res) => {
-  spotifyApi.getMe()
+app.get('/api/spotify/playlists', async (req, res) => {
+  const { spotify } = await getApiClients();
+  if (!spotify.getAccessToken()) {
+    return res.status(401).json({ message: 'Spotify not authenticated' });
+  }
+  spotify.getMe()
     .then(data => {
-      return spotifyApi.getUserPlaylists(data.body.id);
+      return spotify.getUserPlaylists(data.body.id);
     })
     .then(data => {
       const playlists = data.body.items;
