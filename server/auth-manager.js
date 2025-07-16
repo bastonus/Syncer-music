@@ -4,7 +4,7 @@ const { google } = require('googleapis');
 const SpotifyWebApi = require('spotify-web-api-node');
 
 const TOKENS_PATH = path.join(__dirname, 'auth-tokens.json');
-const GOOGLE_REDIRECT_URI = 'http://localhost:3001/auth/google/callback';
+const GOOGLE_REDIRECT_URI = process.env.GOOGLE_REDIRECT_URI || 'http://localhost:3001/auth/google/callback';
 
 // A simple in-memory lock to prevent race conditions
 let isWriting = false;
